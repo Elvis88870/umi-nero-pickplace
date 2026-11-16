@@ -1,0 +1,7 @@
+# Generated experiment artifacts stay out of the integration layer.
+data/
+outputs/
+checkpoints/
+*.ckpt
+*.pt
+*.log
