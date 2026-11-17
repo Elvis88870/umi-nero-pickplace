@@ -52,11 +52,49 @@ After the smoke test completes, begin full training:
 bash scripts/train.sh
 ```
 
+Both training launchers default to GPU index `7` (the eighth GPU in
+`nvidia-smi`, whose indices start at zero). They set `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+and preserve an explicitly supplied `CUDA_VISIBLE_DEVICES`. To select another GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=6 bash scripts/train.sh
+```
+
+With a single visible GPU, Accelerate uses it as logical `cuda:0`. Keep
+`training.device` at its inherited `cuda:0`; the training workspace delegates
+device placement to Accelerate, so overriding `training.device=cuda:7` does not
+select physical GPU `7`.
+
 The scripts accept extra Hydra overrides. For example:
 
 ```bash
 bash scripts/train.sh training.num_epochs=200 dataloader.batch_size=128
 ```
+
+For distributed training on GPU indices 6 and 7, use the two-process launcher:
+
+```bash
+CUDA_VISIBLE_DEVICES=6,7 bash scripts/train_multi_gpu.sh
+```
+
+It defaults to this checkout and `data/pika_pick_place_100.zarr.zip`, unless
+`UMI_ROOT` or `NERO_PICK_PLACE_DATASET_PATH` is supplied. Both processes share
+one output directory under `data/outputs`. Batch size is per GPU: the default
+64 gives a global batch size of 128. To retain a global batch size of 64, pass
+`dataloader.batch_size=32 val_dataloader.batch_size=32`.
+The distributed port defaults to 29667. If occupied, set `NERO_MASTER_PORT`
+to another available port. Avoid port 0 with the PyTorch 2.1 static launcher.
+The minimal `train_smoke.sh` test remains single-GPU.
+
+To check distributed training first, run the two-GPU smoke test:
+
+```bash
+CUDA_VISIBLE_DEVICES=6,7 bash scripts/train_smoke_multi_gpu.sh
+```
+
+It validates the local Zarr and runs one optimizer step per rank (batch size 1
+per GPU), action sampling and checkpoint saving. Pretrained downloads, EMA and
+WandB are disabled. Successful completion prints `DUAL GPU SMOKE TEST PASSED`.
 
 ## Baseline timing decision
 

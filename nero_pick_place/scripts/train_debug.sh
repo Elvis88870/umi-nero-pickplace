@@ -7,6 +7,10 @@ NERO_PICK_PLACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export NERO_PICK_PLACE_DATASET_PATH
 
+# Use the nvidia-smi GPU index; Accelerate sees the selected GPU as cuda:0.
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-7}"
+
 python "$UMI_ROOT/train.py" \
   --config-dir "$NERO_PICK_PLACE_ROOT/config" \
   --config-name pika_nero_pick_place_train \

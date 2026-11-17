@@ -41,6 +41,8 @@ dependencies:
   - aiohttp=3.9
   - aiofiles=23.2
   - pip:
+    # diffusers 0.18.2 imports cached_download, removed in huggingface-hub 0.26.
+    - huggingface-hub==0.25.2
     - ray[default]==2.8.0
     - threadpoolctl==3.2
     - v4l2py==2.2

@@ -90,7 +90,14 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
+        print(
+            f"[rank {os.environ.get('RANK', '0')}] Initializing Accelerator "
+            f"(master={os.environ.get('MASTER_ADDR', 'local')}:"
+            f"{os.environ.get('MASTER_PORT', '-')})",
+            flush=True,
+        )
         accelerator = Accelerator(log_with='wandb')
+        print(f"[rank {accelerator.process_index}] Accelerator ready: {accelerator.device}", flush=True)
         wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
         wandb_cfg.pop('project')
         accelerator.init_trackers(
@@ -107,12 +114,14 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 self.load_checkpoint(path=lastest_ckpt_path)
 
         # configure dataset
+        print(f"[rank {accelerator.process_index}] Loading dataset", flush=True)
         dataset: BaseImageDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset) or isinstance(dataset, BaseDataset)
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
 
         # compute normalizer on the main process and save to disk
+        print(f"[rank {accelerator.process_index}] Dataset loaded; preparing shared normalizer", flush=True)
         normalizer_path = os.path.join(self.output_dir, 'normalizer.pkl')
         if accelerator.is_main_process:
             normalizer = dataset.get_normalizer()
@@ -188,7 +197,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
         train_dataloader, val_dataloader, self.model, self.optimizer, lr_scheduler = accelerator.prepare(
             train_dataloader, val_dataloader, self.model, self.optimizer, lr_scheduler
         )
-        device = self.model.device
+        device = accelerator.device
+        print(f"Training process {accelerator.process_index}/{accelerator.num_processes}: device={device}", flush=True)
         if self.ema_model is not None:
             self.ema_model.to(device)
 
@@ -206,6 +216,8 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
 
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
+        if not accelerator.is_main_process:
+            log_path = os.path.join(self.output_dir, f'logs.rank{accelerator.process_index}.json.txt')
         with JsonLogger(log_path) as json_logger:
             for local_epoch_idx in range(cfg.training.num_epochs):
                 self.model.train()
@@ -229,7 +241,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         # compute loss
                         raw_loss = self.model(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
-                        loss.backward()
+                        accelerator.backward(loss)
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
@@ -306,6 +318,12 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                     step_log[f'{category}_action_mse_error_pos'] = torch.nn.functional.mse_loss(pred_action[..., :3], gt_action[..., :3])
                     step_log[f'{category}_action_mse_error_rot'] = torch.nn.functional.mse_loss(pred_action[..., 3:9], gt_action[..., 3:9])
                     step_log[f'{category}_action_mse_error_width'] = torch.nn.functional.mse_loss(pred_action[..., 9], gt_action[..., 9])
+                # All ranks enter the prepared validation loader together because
+                # Accelerate may synchronize its RNG when iteration starts.
+                val_sampling_batch = None
+                if (self.epoch % cfg.training.sample_every) == 0 and len(val_dataloader) > 0:
+                    val_sampling_batch = next(iter(val_dataloader))
+
                 # run diffusion sampling on a training batch
                 if (self.epoch % cfg.training.sample_every) == 0 and accelerator.is_main_process:
                     with torch.no_grad():
@@ -315,8 +333,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                         pred_action = policy.predict_action(batch['obs'], None)['action_pred']
                         log_action_mse(step_log, 'train', pred_action, gt_action)
 
-                        if len(val_dataloader) > 0:
-                            val_sampling_batch = next(iter(val_dataloader))
+                        if val_sampling_batch is not None:
                             batch = dict_apply(val_sampling_batch, lambda x: x.to(device, non_blocking=True))
                             gt_action = batch['action']
                             pred_action = policy.predict_action(batch['obs'], None)['action_pred']
@@ -362,6 +379,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
                 self.global_step += 1
                 self.epoch += 1
 
+        accelerator.wait_for_everyone()
         accelerator.end_training()
 
 @hydra.main(
