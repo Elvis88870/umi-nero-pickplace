@@ -1,0 +1,6 @@
+# Single fisheye RGB, with the same state/action and timing contract.
+defaults:
+  - pika_nero_pick_place_base
+  - _self_
+
+name: pika_nero_pick_place_fisheye_diffusion_unet_timm

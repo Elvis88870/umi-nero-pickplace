@@ -1,42 +1,19 @@
-# External Hydra composition for the Pika/NERO single-arm pick-and-place task.
-# Launch through scripts/train_debug.sh or scripts/train.sh.
-
+# Existing dual-camera entry point; defaults remain backward compatible.
 defaults:
-  - train_diffusion_unet_timm_umi_workspace
+  - pika_nero_pick_place_base
   - _self_
 
-name: pika_nero_pick_place_diffusion_unet_timm
-task_name: pika_nero_pick_place
-
 task:
-  name: pika_nero_pick_place
-  # The launchers export this value. It may also be overridden on the CLI.
-  dataset_path: ${oc.env:NERO_PICK_PLACE_DATASET_PATH}
-
-  # Source Zarr is stored at ~30 Hz. A stride of 3 gives 10 Hz model windows.
-  dataset_frequeny: 30.0
-  obs_down_sample_steps: 3
-  low_dim_obs_horizon: 2
-  img_obs_horizon: 2
-  action_horizon: 16
-
-  # Baseline: timestamps are synchronized, but physical latency is uncalibrated.
-  # Do not copy the original GoPro values from task/umi.yaml.
-  camera_obs_latency: 0.0
-  robot_obs_latency: 0.0
-  gripper_obs_latency: 0.0
-
-  # Make the representation contract explicit instead of relying only on the
-  # inherited UMI defaults. This is required for the session-dependent
-  # pika_world origin to cancel in single-arm samples.
-  pose_repr:
-    obs_pose_repr: relative
-    action_pose_repr: relative
+  shape_meta:
+    obs:
+      camera1_rgb:
+        shape: [3, 224, 224]
+        horizon: ${task.img_obs_horizon}
+        latency_steps: 0
+        down_sample_steps: ${task.obs_down_sample_steps}
+        type: rgb
+        ignore_by_policy: false
   dataset:
-    pose_repr:
-      obs_pose_repr: relative
-      action_pose_repr: relative
-
-logging:
-  project: pika-nero-pick-place
-  mode: offline
+    quality_filter:
+      camera_masks:
+        camera1_rgb: d405_valid

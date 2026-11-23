@@ -37,7 +37,9 @@ class UmiDataset(BaseDataset):
         repeat_frame_prob: float=0.0,
         seed: int=42,
         val_ratio: float=0.0,
-        max_duration: Optional[float]=None
+        max_duration: Optional[float]=None,
+        quality_filter: Optional[dict]=None,
+        normalizer_num_workers: int=32
     ):
         self.pose_repr = pose_repr
         self.obs_pose_repr = self.pose_repr.get('obs_pose_repr', 'rel')
@@ -143,6 +145,13 @@ class UmiDataset(BaseDataset):
                 key_latency_steps[key] = shape_meta['obs'][query_key]['latency_steps']
                 key_down_sample_steps[key] = shape_meta['obs'][query_key]['down_sample_steps']
 
+        self.validity_masks = None
+        self.normalizer_num_workers = normalizer_num_workers
+        if quality_filter is not None:
+            from diffusion_policy.common.umi_quality import build_validity_masks
+            self.validity_masks = build_validity_masks(
+                replay_buffer, rgb_keys, self.sampler_lowdim_keys, **quality_filter)
+
         sampler = SequenceSampler(
             shape_meta=shape_meta,
             replay_buffer=replay_buffer,
@@ -154,7 +163,8 @@ class UmiDataset(BaseDataset):
             episode_mask=train_mask,
             action_padding=action_padding,
             repeat_frame_prob=repeat_frame_prob,
-            max_duration=max_duration
+            max_duration=max_duration,
+            validity_masks=self.validity_masks
         )
         self.shape_meta = shape_meta
         self.replay_buffer = replay_buffer
@@ -185,7 +195,8 @@ class UmiDataset(BaseDataset):
             episode_mask=self.val_mask,
             action_padding=self.action_padding,
             repeat_frame_prob=self.repeat_frame_prob,
-            max_duration=self.max_duration
+            max_duration=self.max_duration,
+            validity_masks=self.validity_masks
         )
         val_set.val_mask = ~self.val_mask
         return val_set
@@ -199,16 +210,20 @@ class UmiDataset(BaseDataset):
         dataloader = torch.utils.data.DataLoader(
             dataset=self,
             batch_size=64,
-            num_workers=32,
+            num_workers=self.normalizer_num_workers,
         )
-        for batch in tqdm(dataloader, desc='iterating dataset to get normalization'):
-            for key in self.lowdim_keys:
-                data_cache[key].append(copy.deepcopy(batch['obs'][key]))
-            data_cache['action'].append(copy.deepcopy(batch['action']))
-        self.sampler.ignore_rgb(False)
+        try:
+            for batch in tqdm(dataloader, desc='iterating valid train windows to get normalization'):
+                for key in self.lowdim_keys:
+                    data_cache[key].append(copy.deepcopy(batch['obs'][key]))
+                data_cache['action'].append(copy.deepcopy(batch['action']))
+        finally:
+            self.sampler.ignore_rgb(False)
 
         for key in data_cache.keys():
             data_cache[key] = np.concatenate(data_cache[key])
+            if not np.isfinite(data_cache[key]).all():
+                raise ValueError(f'Nonfinite {key} reached normalizer; check validity masks')
             assert data_cache[key].shape[0] == len(self.sampler)
             assert len(data_cache[key].shape) == 3
             B, T, D = data_cache[key].shape

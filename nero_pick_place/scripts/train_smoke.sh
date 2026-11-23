@@ -5,7 +5,7 @@ set -euo pipefail
 # load one batch, and run one optimizer step.
 NERO_PICK_PLACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UMI_ROOT="${UMI_ROOT:-$(cd "$NERO_PICK_PLACE_ROOT/.." && pwd)}"
-NERO_PICK_PLACE_DATASET_PATH="${NERO_PICK_PLACE_DATASET_PATH:-$NERO_PICK_PLACE_ROOT/data/pika_pick_place_100.zarr.zip}"
+NERO_PICK_PLACE_DATASET_PATH="${NERO_PICK_PLACE_DATASET_PATH:-$NERO_PICK_PLACE_ROOT/data/pika_dataset_0_99.zarr.zip}"
 
 export UMI_ROOT
 export NERO_PICK_PLACE_DATASET_PATH
@@ -20,7 +20,7 @@ bash "$NERO_PICK_PLACE_ROOT/scripts/validate_dataset.sh"
 
 python "$UMI_ROOT/train.py" \
   --config-dir "$NERO_PICK_PLACE_ROOT/config" \
-  --config-name pika_nero_pick_place_train \
+  --config-name "${NERO_TRAIN_CONFIG:-pika_nero_pick_place_train}" \
   training.debug=false \
   training.num_epochs=1 \
   training.max_train_steps=1 \

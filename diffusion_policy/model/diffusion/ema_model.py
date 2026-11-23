@@ -41,6 +41,16 @@ class EMAModel:
         self.decay = 0.0
         self.optimization_step = 0
 
+    def state_dict(self):
+        # Weights are saved separately as ema_model by the workspace.
+        return {key: getattr(self, key) for key in (
+            'update_after_step', 'inv_gamma', 'power', 'min_value',
+            'max_value', 'decay', 'optimization_step')}
+
+    def load_state_dict(self, state):
+        for key in self.state_dict():
+            setattr(self, key, state[key])
+
     def get_decay(self, optimization_step):
         """
         Compute the decay factor for the exponential moving average.

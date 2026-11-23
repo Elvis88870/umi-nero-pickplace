@@ -30,7 +30,8 @@ class SequenceSampler:
         episode_mask: Optional[np.ndarray]=None,
         action_padding: bool=False,
         repeat_frame_prob: float=0.0,
-        max_duration: Optional[float]=None
+        max_duration: Optional[float]=None,
+        validity_masks: Optional[dict]=None
     ):
         episode_ends = replay_buffer.episode_ends[:]
 
@@ -103,6 +104,19 @@ class SequenceSampler:
             self.replay_buffer['action'] = np.concatenate(actions, axis=-1)
 
         self.action_padding = action_padding
+        self.validity_masks = validity_masks
+        if validity_masks is not None:
+            from diffusion_policy.common.umi_quality import filter_sequence_indices
+            for key in rgb_keys + lowdim_keys + ['action']:
+                if key_latency_steps[key] != 0 or int(key_down_sample_steps[key]) != key_down_sample_steps[key]:
+                    raise ValueError('Quality filtering requires zero latency and integer frame strides')
+            original_count = len(indices)
+            indices = filter_sequence_indices(
+                indices, validity_masks, rgb_keys, lowdim_keys,
+                key_horizon, key_down_sample_steps)
+            print(f'Quality windows: kept={len(indices)} rejected={original_count-len(indices)} candidates={original_count}', flush=True)
+            if not indices:
+                raise ValueError('No valid windows remain in this episode split')
         self.indices = indices
         self.rgb_keys = rgb_keys
         self.lowdim_keys = lowdim_keys
@@ -143,6 +157,13 @@ class SequenceSampler:
                 if output.shape[0] < this_horizon:
                     padding = np.repeat(output[:1], this_horizon - output.shape[0], axis=0)
                     output = np.concatenate([padding, output], axis=0)
+            elif self.validity_masks is not None:
+                # Fixed-rate, zero-latency export: use exactly the stored states.
+                # Do not construct Slerp from an unrelated +/-5-frame buffer,
+                # which may contain NaNs outside this accepted window.
+                frame_indices = np.maximum(
+                    start_idx, current_idx - np.arange(this_horizon)[::-1] * this_downsample_steps)
+                output = input_arr[frame_indices].copy()
             else:
                 idx_with_latency = np.array(
                     [current_idx - idx * this_downsample_steps + this_latency_steps for idx in range(this_horizon)],

@@ -13,7 +13,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-7}"
 
 python "$UMI_ROOT/train.py" \
   --config-dir "$NERO_PICK_PLACE_ROOT/config" \
-  --config-name pika_nero_pick_place_train \
+  --config-name "${NERO_TRAIN_CONFIG:-pika_nero_pick_place_train}" \
   training.debug=true \
   logging.mode=disabled \
   "$@"

@@ -166,7 +166,7 @@ class DiffusionUnetTimmPolicy(BaseImagePolicy):
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
-    def compute_loss(self, batch):
+    def compute_loss(self, batch, reduction='mean'):
         # normalize input
         assert 'valid_mask' not in batch
         nobs = self.normalizer.normalize(batch['obs'])
@@ -221,10 +221,15 @@ class DiffusionUnetTimmPolicy(BaseImagePolicy):
 
         loss = F.mse_loss(pred, target, reduction='none')
         loss = loss.type(loss.dtype)
-        loss = reduce(loss, 'b ... -> b (...)', 'mean')
-        loss = loss.mean()
-
-        return loss
+        loss = reduce(loss, 'b ... -> b', 'mean')
+        # Retain one value per original example for distributed validation;
+        # the default training objective is unchanged.
+        loss = loss.reshape(batch['action'].shape[0], self.train_diffusion_n_samples).mean(dim=1)
+        if reduction == 'none':
+            return loss
+        if reduction != 'mean':
+            raise ValueError(f'Unsupported loss reduction: {reduction}')
+        return loss.mean()
 
     def forward(self, batch):
         return self.compute_loss(batch)

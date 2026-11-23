@@ -12,7 +12,7 @@ export NERO_PICK_PLACE_DATASET_PATH
 
 python "$UMI_ROOT/train.py" \
   --config-dir "$NERO_PICK_PLACE_ROOT/config" \
-  --config-name pika_nero_pick_place_train \
+  --config-name "${NERO_TRAIN_CONFIG:-pika_nero_pick_place_train}" \
   --cfg job \
   --resolve \
   "$@"

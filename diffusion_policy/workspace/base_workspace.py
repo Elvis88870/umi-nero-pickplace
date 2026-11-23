@@ -67,7 +67,8 @@ class BaseWorkspace:
                 target=lambda : torch.save(payload, path.open('wb'), pickle_module=dill))
             self._saving_thread.start()
         else:
-            torch.save(payload, path.open('wb'), pickle_module=dill)
+            with path.open('wb') as stream:
+                torch.save(payload, stream, pickle_module=dill)
         return str(path.absolute())
     
     def get_checkpoint_path(self, tag='latest'):

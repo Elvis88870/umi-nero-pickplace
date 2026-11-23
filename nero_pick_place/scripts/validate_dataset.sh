@@ -6,4 +6,4 @@ NERO_PICK_PLACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${NERO_PICK_PLACE_DATASET_PATH:?Set NERO_PICK_PLACE_DATASET_PATH to the Zarr zip}"
 
 python "$NERO_PICK_PLACE_ROOT/scripts/validate_dataset.py" \
-  "$NERO_PICK_PLACE_DATASET_PATH"
+  "$NERO_PICK_PLACE_DATASET_PATH" "$@"
