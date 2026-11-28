@@ -1,7 +1,6 @@
 from typing import Optional
 import numpy as np
 import random
-import scipy.interpolate as si
 import scipy.spatial.transform as st
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 
@@ -34,6 +33,14 @@ class SequenceSampler:
         validity_masks: Optional[dict]=None
     ):
         episode_ends = replay_buffer.episode_ends[:]
+        self.valid_masks = {}
+        for key in (
+            "fisheye_valid", "d405_valid", "pose_valid",
+            "gripper_valid", "frame_valid",
+        ):
+            if key in replay_buffer:
+                self.valid_masks[key] = np.asarray(
+                    replay_buffer[key][:], dtype=bool)
 
         # load gripper_width
         gripper_width = replay_buffer['robot0_gripper_width'][:, 0]
@@ -53,6 +60,17 @@ class SequenceSampler:
                 end_idx = min(end_idx, max_duration * 60)
             for current_idx in range(start_idx, end_idx):
                 if not action_padding and end_idx < current_idx + (key_horizon['action'] - 1) * key_down_sample_steps['action'] + 1:
+                    continue
+                if not self._training_sample_valid(
+                        current_idx=current_idx,
+                        start_idx=start_idx,
+                        end_idx=end_idx,
+                        rgb_keys=rgb_keys,
+                        lowdim_keys=lowdim_keys,
+                        key_horizon=key_horizon,
+                        key_latency_steps=key_latency_steps,
+                        key_down_sample_steps=key_down_sample_steps,
+                    ):
                     continue
                 if gripper_width[current_idx] < gripper_width_threshold:
                     before_first_grasp = False
@@ -126,6 +144,78 @@ class SequenceSampler:
         
         self.ignore_rgb_is_applied = False # speed up the interation when getting normalizaer
 
+    def _key_valid_mask(self, key):
+        if key == "camera0_rgb":
+            mask = self.valid_masks.get("fisheye_valid")
+        elif key == "camera1_rgb":
+            mask = self.valid_masks.get("d405_valid")
+        elif "gripper" in key:
+            mask = self.valid_masks.get("gripper_valid")
+        elif "eef" in key or "pose" in key:
+            mask = self.valid_masks.get("pose_valid")
+        else:
+            mask = self.valid_masks.get("frame_valid")
+        return mask
+
+    @staticmethod
+    def _mask_query_valid(mask, indices, start_idx, end_idx):
+        indices = np.asarray(indices, dtype=np.float64)
+        if not np.all(np.isfinite(indices)):
+            return False
+        lower = np.floor(indices).astype(np.int64)
+        upper = np.ceil(indices).astype(np.int64)
+        if lower.min() < start_idx or upper.max() >= end_idx:
+            return False
+        return bool(np.all(mask[lower]) and np.all(mask[upper]))
+
+    def _training_sample_valid(
+            self,
+            current_idx,
+            start_idx,
+            end_idx,
+            rgb_keys,
+            lowdim_keys,
+            key_horizon,
+            key_latency_steps,
+            key_down_sample_steps,
+        ):
+        if not self.valid_masks:
+            return True
+
+        for key in list(rgb_keys) + list(lowdim_keys):
+            mask = self._key_valid_mask(key)
+            if mask is None:
+                continue
+            horizon = key_horizon[key]
+            latency = key_latency_steps[key]
+            step = key_down_sample_steps[key]
+            if key in rgb_keys:
+                query_indices = np.asarray([
+                    current_idx - idx * step for idx in range(horizon)
+                ], dtype=np.float64)
+            else:
+                query_indices = np.asarray([
+                    current_idx - idx * step + latency
+                    for idx in range(horizon)
+                ], dtype=np.float64)
+            if not self._mask_query_valid(
+                    mask, query_indices, start_idx, end_idx):
+                return False
+
+        pose_mask = self._key_valid_mask("robot0_eef_pos")
+        gripper_mask = self._key_valid_mask("robot0_gripper_width")
+        action_indices = np.asarray([
+            current_idx + idx * key_down_sample_steps["action"]
+            for idx in range(key_horizon["action"])
+        ], dtype=np.int64)
+        if action_indices[-1] >= end_idx:
+            return False
+        if pose_mask is not None and not np.all(pose_mask[action_indices]):
+            return False
+        if gripper_mask is not None and not np.all(gripper_mask[action_indices]):
+            return False
+        return True
+
     def __len__(self):
         return len(self.indices)
     
@@ -170,8 +260,9 @@ class SequenceSampler:
                     dtype=np.float32)
                 idx_with_latency = idx_with_latency[::-1]
                 idx_with_latency = np.clip(idx_with_latency, start_idx, end_idx - 1)
-                interpolation_start = max(int(idx_with_latency[0]) - 5, start_idx)
-                interpolation_end = min(int(idx_with_latency[-1]) + 2 + 5, end_idx)
+                lower = np.floor(idx_with_latency).astype(np.int64)
+                upper = np.ceil(idx_with_latency).astype(np.int64)
+                alpha = idx_with_latency - lower
 
                 if 'rot' in key:
                     # rotation
@@ -184,16 +275,25 @@ class SequenceSampler:
                         rot_postprocess = st.Rotation.as_rotvec
                     else:
                         raise NotImplementedError
-                    slerp = st.Slerp(
-                        times=np.arange(interpolation_start, interpolation_end),
-                        rotations=rot_preprocess(input_arr[interpolation_start: interpolation_end]))
-                    output = rot_postprocess(slerp(idx_with_latency))
+                    rotations = []
+                    for query, lo, hi, weight in zip(
+                            idx_with_latency, lower, upper, alpha):
+                        if lo == hi:
+                            rotations.append(
+                                rot_preprocess(input_arr[int(lo)]))
+                            continue
+                        slerp = st.Slerp(
+                            times=np.asarray([lo, hi], dtype=np.float64),
+                            rotations=rot_preprocess(input_arr[[lo, hi]]),
+                        )
+                        rotations.append(slerp([float(query)]))
+                    output = rot_postprocess(
+                        st.Rotation.concatenate(rotations))
                 else:
-                    interp = si.interp1d(
-                        x=np.arange(interpolation_start, interpolation_end),
-                        y=input_arr[interpolation_start: interpolation_end],
-                        axis=0, assume_sorted=True)
-                    output = interp(idx_with_latency)
+                    output = (
+                        (1.0 - alpha[:, None]) * input_arr[lower]
+                        + alpha[:, None] * input_arr[upper]
+                    )
                 
             result[key] = output
 

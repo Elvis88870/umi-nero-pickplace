@@ -1,0 +1,204 @@
+# NERO ROS2 deployment configuration.
+#
+# Values marked "needs_measurement" are intentionally not treated as calibrated
+# hardware facts. Preview runs with these values, but --control is rejected
+# until every field under hardware_verification is explicitly confirmed.
+
+ros:
+  node_name: nero_ros_umi_env
+  state_qos_depth: 20
+  image_qos: sensor_data
+  fisheye_qos_depth: 30
+
+observation:
+  # The checkpoint determines whether camera1_rgb/D405 is required. This
+  # default supports the current fisheye-only policy.
+  include_d405: false
+  d405_rgb_topic: /right/camera/realsense/color/image_raw
+  d405_source: shared_memory
+  d405_shm_name: /umi_d405_right
+  d405_shm_open_timeout_sec: 3.0
+  fisheye_rgb_topic: /right/camera/fisheye/color/image_raw/compressed
+  fisheye_message_type: CompressedImage
+  tcp_pose_topic: /right/feedback/tcp_pose
+  gripper_state_topic: /right/gripper/joint_state
+  gripper_telemetry_topic: /right/gripper/data
+  gripper_joint_name: right_gripper_joint
+
+  # Model observation contract. Must agree with checkpoint shape_meta.
+  history_horizon: 2
+  history_interval_sec: 0.10
+
+  # All synchronization limits are configurable and still need real-hardware
+  # calibration. They are not copied from the legacy inference runner.
+  calibration_status: needs_measurement
+  max_stream_age_ms: 250.0
+  max_d405_match_residual_ms: 20.0
+  max_fisheye_match_residual_ms: 20.0
+  max_camera_pair_skew_ms: 30.0
+  max_tcp_interpolation_gap_ms: 60.0
+  max_gripper_interpolation_gap_ms: 80.0
+
+  # Aligned fisheye timestamp = raw fisheye timestamp + this offset.
+  # UNVERIFIED: must be measured for the current sensor stack.
+  d405_to_fisheye_offset_ms: 0.0
+  d405_to_fisheye_offset_status: needs_measurement
+  diagnostic_interval_sec: 30.0
+
+action:
+  action_horizon: 16
+  action_interval_sec: 0.10
+  replan_interval_sec: 0.60
+  publish_rate_hz: 50.0
+  minimum_command_lead_sec: 0.01
+  # Before the first model plan, activate QP at the measured TCP and gripper
+  # state. This lets QP initialize safely even when early model actions have
+  # expired during inference.
+  controller_prime_hold_sec: 0.30
+  controller_prime_rate_hz: 50.0
+  grasp_sync:
+    enabled: true
+    # Model controls the approach and grasp location; the lift guard waits
+    # at the model's lowest approach point only when it requests upward motion.
+    model_driven_pose: true
+    # Pause only a model-requested lift; grasp location is the model's lowest
+    # approach waypoint, not a manually chosen jaw width or fixed height.
+    lift_guard:
+      enabled: true
+      rise_detection_m: 0.002
+      position_tolerance_m: 0.004
+      timeout_sec: 5.0
+      max_tcp_age_sec: 0.25
+      # Local upward reapproach is allowed within 10 mm of the initial grasp
+      # height; the ceiling never rises with successive correction forecasts.
+      max_upward_correction_m: 0.010
+    # Used only to recognize a model open/release command for jaw compensation.
+    close_threshold_m: 0.080
+    # Jaw-only bias on the current model width: no minimum-width latch.
+    # Model reopening passes through immediately with the existing bias;
+    # the bias stops growing while reopening and resets on full opening.
+    # Extra closing is bounded by 3 mm and the tested 60 mm compensation floor.
+    max_extra_close_m: 0.003
+    tighten_floor_m: 0.060
+    tighten_rate_mps: 0.005
+    target_width_tolerance_m: 0.001
+    # Legacy stationary grasp settings below are inactive in model_driven_pose.
+    always_tighten_before_verification: true
+    # Preserve end-to-end lift behavior: discard plans inferred during the
+    # low-pose grasp wait and resume only from a post-contact observation.
+    require_fresh_post_grasp_plan: true
+    position_tolerance_m: 0.012
+    settle_sec: 0.6
+    close_rate_mps: 0.02
+    close_timeout_sec: 5.0
+    verification:
+      # Current object only, experimental: empty |Current|=213..214 and held
+      # |Current|=350..363 at a 60 mm command. This is not a force in Newtons.
+      effort_calibrated: true
+      contact_effort_min: 300.0
+      # Sustained current decays after contact (observed 350 -> 73), so use the
+      # current-object jaw obstruction instead: empty command error ~0.65 mm,
+      # held error ~1.2..1.35 mm. Current remains diagnostic only.
+      effort_required: false
+      contact_width_error_min_m: 0.0009
+      stable_sec: 0.3
+      stable_width_tolerance_m: 0.001
+      empty_closed_width_m: 0.0607
+      empty_width_margin_m: 0.0002
+      max_feedback_age_sec: 0.25
+      max_feedback_gap_sec: 0.1
+  # 0 executes the full future horizon. For the first real-arm test, override
+  # with --control-action-limit N to execute only a short prefix per plan.
+  max_actions_per_plan: 0
+  # Optional path slowing; disabled together with translation-step rejection.
+  translation_step_limiter:
+    enabled: false
+    max_input_step_ratio: 1.5
+  # Operator-requested: original model rotation waypoints pass through.
+  rotation_step_limiter:
+    enabled: false
+    max_input_step_ratio: 1.5
+  timing_status: partially_measured
+
+  # Execution timestamp:
+  #   observation_timestamp + step * action_interval_sec
+  # Pose/gripper command timestamps are shifted earlier by their respective
+  # compensation sums.
+  compensation:
+    camera_timestamp_sec: 0.0
+    # Diagnostic measurement on 2026-11-22:
+    # P50=225.5 ms, P95=239.2 ms, P99=248.6 ms, max=250.9 ms.
+    # Not subtracted here: action timestamps are observation-relative and
+    # expired inference steps are already removed by ActionScheduler.
+    inference_latency_sec: 0.0
+    ros_transport_latency_sec: 0.0
+    zmq_transport_latency_sec: 0.0
+    qp_latency_sec: 0.0
+    # Measured on 2026-11-22 over three 4 mm open/return cycles:
+    # first-response P50=29.9 ms, P95=30.1 ms, min=29.0 ms, max=30.2 ms.
+    gripper_latency_sec: 0.030
+    status: inference_measured_not_subtracted_gripper_measured_pose_pending
+
+control_output:
+  # This new entry publishes directly into the existing QP/gripper ROS chain.
+  # It does not publish the Sense pose consumed by pub_delta_pose.
+  mode: direct_ros_pose
+  pose_topic: /right/delta_pose
+  gripper_control_topic: /right/gripper/joint_states_ctrl
+  teleop_active_topic: /right/teleop_active
+  expected_pose_frame: right_base_link
+  qp_status_topic: /right/velocity_qp_status
+
+recovery_pose:
+  # Confirmed task start pose recorded from live right-arm feedback.
+  # Restore the redundant arm by joints, then cross-check the resulting TCP.
+  joint_control_topic: /right/control/joint_states
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
+  joint_positions_rad:
+    [0.04382521751757762, 0.42320743702358504, -0.014835298641951801,
+     1.4249740677907703, -0.014765485471872028, -0.003543018381548489,
+     0.5356066408520199]
+  joint_tolerance_rad: 0.010
+  max_joint_velocity_rad_s: 0.20
+  frame_id: right_base_link
+  position_xyz_m: [-0.5430347401249785, -0.01568790990387538, 0.18167422382980894]
+  orientation_xyzw: [0.39512307038944766, 0.016372050545539564, -0.9183830066235902, 0.013504382694693567]
+  gripper_width_m: 0.09670703858137131
+  position_tolerance_m: 0.003
+  rotation_tolerance_rad: 0.030
+  gripper_tolerance_m: 0.003
+  settle_sec: 0.5
+  timeout_sec: 30.0
+  publish_rate_hz: 50.0
+
+safety:
+  # Interactive testing currently runs without an absolute Cartesian
+  # workspace. Gripper and QP velocity/joint limits remain
+  # enforced. Re-enable this before unattended or production operation.
+  workspace_enabled: false
+  workspace_min_xyz_m: null
+  workspace_max_xyz_m: null
+  # Operator-requested: allow original model translation waypoints through.
+  # QP velocity limits remain downstream; they do not bound target jumps.
+  translation_step_check_enabled: false
+  rotation_step_check_enabled: false
+  # Retained for opt-in restoration; inactive while the check is disabled.
+  max_translation_step_m: 0.035
+  max_rotation_step_rad: 0.080
+  gripper_min_m: 0.0
+  # Pika gripper command range; serial_gripper_imu clamps at 0.098 m.
+  gripper_max_m: 0.098
+  required_action_interval_tolerance_sec: 0.005
+
+hardware_verification:
+  # Confirmed by the operator on 2026-11-20 before the first slow control run.
+  operator_confirmed: true
+  tcp_frame_verified: true
+  tcp_position_unit_verified: true
+  tcp_orientation_representation_verified: true
+  tcp_training_semantics_verified: true
+  gripper_unit_verified: true
+  gripper_direction_verified: true
+  downstream_interface_verified: true
+  qp_timeout_stop_verified: true
+  exclusive_control_path_verified: true

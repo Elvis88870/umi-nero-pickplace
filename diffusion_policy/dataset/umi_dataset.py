@@ -229,6 +229,10 @@ class UmiDataset(BaseDataset):
             B, T, D = data_cache[key].shape
             if not self.temporally_independent_normalization:
                 data_cache[key] = data_cache[key].reshape(B*T, D)
+            if not np.all(np.isfinite(data_cache[key])):
+                raise ValueError(
+                    f"normalizer input {key} contains invalid or placeholder values; "
+                    "SequenceSampler mask filtering must run first")
 
         # action
         assert data_cache['action'].shape[-1] % self.num_robot == 0
